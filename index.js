@@ -1,7 +1,7 @@
 const express = require("express");
 const app = express();
 const cors = require("cors");
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -9,6 +9,26 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 // middlewares
 app.use(cors());
 app.use(express.json());
+
+// jwt verify
+const verifyJWT = (req, res, next) => {
+  const authorization = req.headers.authorization;
+  const token = authorization.split(" ")[1];
+  if (!authorization) {
+    return res
+      .status(401)
+      .send({ error: true, message: "unauthorized access" });
+  }
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res
+        .status(401)
+        .send({ error: true, message: "unauthorized access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.h7lvo9z.mongodb.net/?retryWrites=true&w=majority`;
 
@@ -30,8 +50,31 @@ async function run() {
     const cartsCollection = client.db("bistroDB").collection("carts");
     const usersCollection = client.db("bistroDB").collection("users");
 
+    // jwt related apis
+    app.post("/jwt", (req, res) => {
+      const user = req.body;
+      const token = jwt.sign(user, process.env.JWT_SECRET, {
+        expiresIn: "1hr",
+      });
+      res.send({ token });
+    });
+
+    // verify the user if admin or not
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await usersCollection.findOne(query);
+      const isAdmin = user?.role === "admin" ? true : false;
+      if (!isAdmin) {
+        return res
+          .status(403)
+          .send({ error: true, message: "forbidded access" });
+      }
+      next();
+    };
+
     // users related apis
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
     });
@@ -60,12 +103,22 @@ async function run() {
       res.send(result);
     });
 
-    app.delete('/users/:id', async (req, res) => {
-      const id = req.params.id
-      const query = {_id : new ObjectId(id)}
-      const result = await usersCollection.deleteOne(query)
-      res.send(result)
-    })
+    app.delete("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await usersCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    app.get("/users/admin/:email", verifyJWT, async (req, res) => {
+      const email = req.params.email;
+      if (req.decoded.email !== email) {
+        res.send({ admin: false });
+      }
+      const query = { email: email };
+      const user = await usersCollection.findOne(query);
+      res.send({ admin: user?.role === "admin" });
+    });
 
     // menu related apis
     app.get("/menus", async (req, res) => {
@@ -80,11 +133,17 @@ async function run() {
     });
 
     // cart related
-    app.get("/carts", async (req, res) => {
+    app.get("/carts", verifyJWT, async (req, res) => {
       const email = req.query.email;
+      const decodedEmail = req.decoded.email;
       if (!email) {
         res.send([]);
       } else {
+        if (email !== decodedEmail) {
+          return res
+            .status(401)
+            .send({ error: true, message: "unauthorized access" });
+        }
         const query = { email: email };
         const result = await cartsCollection.find(query).toArray();
         res.send(result);
